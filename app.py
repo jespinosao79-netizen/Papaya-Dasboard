@@ -356,7 +356,9 @@ def check_password() -> bool:
     def _validate():
         user = st.session_state.get("login_user", "").strip()
         pwd = st.session_state.get("login_pass", "")
-        expected = users.get(user)
+        # El usuario no distingue mayusculas; la contrasena si.
+        lookup = {str(k).strip().lower(): v for k, v in users.items()}
+        expected = lookup.get(user.lower())
         if expected is not None and hmac.compare_digest(str(pwd), str(expected)):
             st.session_state["auth_ok"] = True
             st.session_state["auth_user"] = user
