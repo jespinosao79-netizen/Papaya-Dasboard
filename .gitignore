@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.streamlit/secrets.toml
+*.bat
+data/
+analisis_sams.py
+_health_check.py
+_check_consolidation.py
+verifica_col_v.py
+debug_tx.py
