@@ -13,12 +13,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Usa el almacen de certificados del sistema (Windows) para evitar errores SSL
-# cuando hay firewall/antivirus corporativo interceptando trafico HTTPS.
+# Usa el almacen de certificados del sistema (solo Windows/macOS) para evitar
+# errores SSL con firewall/antivirus corporativo. En Linux (Streamlit Cloud)
+# no aplica y puede fallar - lo silenciamos.
 try:
     import truststore
     truststore.inject_into_ssl()
-except ImportError:
+except Exception:
     pass
 
 import pandas as pd
