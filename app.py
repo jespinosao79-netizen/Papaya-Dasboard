@@ -30,7 +30,24 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 # Configuracion de fuentes
 # ---------------------------------------------------------------------------
-DATA_DIR = Path(__file__).parent / "data"
+def _pick_data_dir() -> Path:
+    """Directorio de datos. Usa ./data si es escribible; si no (contenedor con
+    filesystem de solo lectura) cae a un temporal."""
+    candidate = Path(__file__).parent / "data"
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / ".write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return candidate
+    except Exception:
+        import tempfile
+        fallback = Path(tempfile.gettempdir()) / "papaya_dashboard_data"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
+DATA_DIR = _pick_data_dir()
 FETCHER_SCRIPT = Path(__file__).parent / "fetch_data.py"
 
 SOURCES = {
@@ -117,11 +134,23 @@ def refresh_local_data(timeout: int = 90) -> tuple[bool, str]:
         )
         if proc.returncode == 0:
             return True, proc.stdout.strip()
-        return False, f"exit {proc.returncode}: {proc.stderr.strip()[:500]}"
+        err = f"exit {proc.returncode}: {proc.stderr.strip()[:300]}"
     except subprocess.TimeoutExpired:
-        return False, f"Timeout tras {timeout}s"
+        err = f"Timeout tras {timeout}s"
     except Exception as exc:
-        return False, str(exc)
+        err = str(exc)
+
+    # Fallback: descarga directa desde este proceso (Streamlit Cloud / Linux)
+    try:
+        for cfg in SOURCES.values():
+            if not cfg.get("local_file"):
+                continue
+            url = build_csv_url(cfg["spreadsheet_id"], cfg["sheet_name"], cfg.get("gid"))
+            text = _fetch_with_retries(url, max_attempts=2)
+            (DATA_DIR / cfg["local_file"]).write_text(text, encoding="utf-8")
+        return True, "Descarga directa OK"
+    except Exception as exc:
+        return False, f"subprocess: {err} | directo: {exc}"
 
 
 def _fetch_via_urllib(url: str, verify: bool = True) -> str:
@@ -163,9 +192,18 @@ def fetch_sheet(label: str, spreadsheet_id: str, sheet_name: str, positional_map
     if local_file:
         local_path = DATA_DIR / local_file
         if not local_path.exists():
+            # 1) subprocess (necesario en Windows con proxy Netskope)
             ok, msg = refresh_local_data()
             if not ok:
-                raise RuntimeError(f"No hay {local_file} y no se pudo descargar: {msg}")
+                # 2) descarga directa (funciona en Streamlit Cloud / Linux)
+                try:
+                    url = build_csv_url(spreadsheet_id, sheet_name, gid)
+                    text_direct = _fetch_with_retries(url, max_attempts=2)
+                    local_path.write_text(text_direct, encoding="utf-8")
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"No hay {local_file}. Subprocess: {msg} | Directo: {exc}"
+                    ) from exc
         with open(local_path, "rb") as f:
             content = f.read()
         text = content.decode("utf-8", errors="replace")
