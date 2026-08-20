@@ -4,6 +4,7 @@ Fuentes: Google Sheets (TX LOADS y TIJ LOADS)
 Variables analizadas: VENDOR, DEPART WEEK, CAJAS 35 LB, ALMACEN
 """
 
+import hmac
 import io
 import os
 import re
@@ -322,6 +323,69 @@ def load_all() -> tuple[pd.DataFrame, dict]:
 # UI
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Dashboard Papaya", page_icon="🍈", layout="wide")
+
+
+# ---------------------------------------------------------------------------
+# Control de acceso (usuario + contrasena)
+# Las credenciales viven en los Secrets de Streamlit, NUNCA en el repositorio:
+#   [passwords]
+#   usuario = "clave"
+# Local: archivo .streamlit/secrets.toml (ignorado por git)
+# Nube:  Streamlit Cloud > Settings > Secrets
+# ---------------------------------------------------------------------------
+def _get_users() -> dict:
+    try:
+        return dict(st.secrets.get("passwords", {}))
+    except Exception:
+        return {}
+
+
+def check_password() -> bool:
+    """Devuelve True solo si el usuario ya se autentico."""
+    if st.session_state.get("auth_ok"):
+        return True
+
+    users = _get_users()
+    if not users:
+        st.error(
+            "No hay credenciales configuradas. Agrega una seccion [passwords] "
+            "en los Secrets de la app (o en .streamlit/secrets.toml si corres local)."
+        )
+        return False
+
+    def _validate():
+        user = st.session_state.get("login_user", "").strip()
+        pwd = st.session_state.get("login_pass", "")
+        expected = users.get(user)
+        if expected is not None and hmac.compare_digest(str(pwd), str(expected)):
+            st.session_state["auth_ok"] = True
+            st.session_state["auth_user"] = user
+        else:
+            st.session_state["auth_ok"] = False
+            st.session_state["auth_failed"] = True
+        st.session_state["login_pass"] = ""
+
+    st.title("Dashboard de Embarques de Papaya")
+    st.caption("Acceso restringido")
+    with st.form("login_form"):
+        st.text_input("Usuario", key="login_user")
+        st.text_input("Contrasena", type="password", key="login_pass")
+        st.form_submit_button("Entrar", on_click=_validate)
+    if st.session_state.get("auth_failed"):
+        st.error("Usuario o contrasena incorrectos.")
+    return False
+
+
+if not check_password():
+    st.stop()
+
+with st.sidebar:
+    st.caption(f"Conectado como **{st.session_state.get('auth_user', '')}**")
+    if st.button("Cerrar sesion"):
+        for k in ("auth_ok", "auth_user", "auth_failed"):
+            st.session_state.pop(k, None)
+        st.rerun()
+
 st.title("Dashboard de Embarques de Papaya")
 st.caption("Fuentes: TX LOADS + TIJ LOADS · Filtrado solo producto PAPAYA")
 
