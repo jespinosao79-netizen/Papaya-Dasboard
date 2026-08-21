@@ -559,7 +559,8 @@ pivot_loads = loads_df.pivot_table(
 )
 if not pivot_loads.empty:
     pivot_loads.columns = [int(c) if float(c).is_integer() else c for c in pivot_loads.columns]
-    pivot_loads = pivot_loads.reindex(sorted(pivot_loads.columns), axis=1)
+    # Semanas en orden DESCENDENTE: la mas reciente queda como primera columna.
+    pivot_loads = pivot_loads.reindex(sorted(pivot_loads.columns, reverse=True), axis=1)
     week_cols = list(pivot_loads.columns)
     n_weeks = len(week_cols)
     pivot_loads["TOTAL"] = pivot_loads[week_cols].sum(axis=1)
