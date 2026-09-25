@@ -460,45 +460,16 @@ if week_range:
 
 fdf = df.loc[mask].copy()
 
-LOAD_SIZE = 1150  # 1 camion / 1 load = 1150 cajas 35 LB
-
-# KPIs combinados (todos los destinos juntos)
-st.markdown("#### Total general")
+# KPIs
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Total cajas 35 LB", f"{int(fdf['CAJAS_35LB'].sum()):,}")
 k2.metric("Embarques", f"{len(fdf):,}")
 k3.metric("Vendors distintos", fdf["VENDOR"].nunique())
 k4.metric("Almacenes distintos", fdf["ALMACEN"].nunique())
 
-# --- Comparativo TX vs TIJ ---
-st.markdown("#### Comparativo por destino")
-DESTINOS = [("TX LOADS", "TX", "tx"), ("TIJ LOADS", "TIJ", "tij")]
-destinos_activos = [(s, c, p) for s, c, p in DESTINOS if s in sources_sel]
-
-total_cajas_all = float(fdf["CAJAS_35LB"].sum())
-cmp_cols = st.columns(len(destinos_activos) + 1) if destinos_activos else [st]
-for i, (src_d, corto, _p) in enumerate(destinos_activos):
-    sub = fdf[fdf["SOURCE"] == src_d]
-    cajas = int(sub["CAJAS_35LB"].sum())
-    share = (cajas / total_cajas_all * 100) if total_cajas_all else 0
-    with cmp_cols[i]:
-        with st.container(border=True):
-            st.markdown(f"**{corto}**")
-            st.markdown(f"### {cajas:,}")
-            st.caption(f"cajas · {cajas / LOAD_SIZE:,.1f} camiones")
-            st.caption(f"{len(sub):,} embarques · {share:.1f}% del total")
-
-if destinos_activos:
-    with cmp_cols[-1]:
-        comp = (
-            fdf.groupby("SOURCE", as_index=False)["CAJAS_35LB"].sum()
-            .sort_values("CAJAS_35LB", ascending=False)
-        )
-        fig_cmp = px.pie(comp, names="SOURCE", values="CAJAS_35LB", hole=0.5)
-        fig_cmp.update_layout(height=200, margin=dict(l=0, r=0, t=10, b=10))
-        st.plotly_chart(fig_cmp, use_container_width=True, key="pie_destinos")
-
 st.divider()
+
+LOAD_SIZE = 1150  # 1 camion / 1 load = 1150 cajas 35 LB
 
 # ---------------------------------------------------------------------------
 # Calendario semanal
@@ -587,13 +558,6 @@ else:
                     st.markdown(f"### {cajas:,}")
                     st.caption(f"cajas · {camiones:.1f} camiones")
                     st.caption(f"{len(dia_df)} embarques")
-                    partes = []
-                    for _s, _c, _p in DESTINOS:
-                        v = int(dia_df.loc[dia_df["SOURCE"] == _s, "CAJAS_35LB"].sum())
-                        if v:
-                            partes.append(f"{_c} {v:,}")
-                    if partes:
-                        st.caption(" · ".join(partes))
                 elif futuro:
                     st.markdown("### —")
                     st.caption("por salir")
@@ -653,203 +617,177 @@ else:
 
 st.divider()
 
-# ---------------------------------------------------------------------------
-# Bloque de analisis por destino (TX / TIJ), uno debajo del otro.
-# Cada seccion repite el mismo juego de vistas pero solo con sus datos.
-# ---------------------------------------------------------------------------
-def render_destino(dd: pd.DataFrame, titulo: str, pfx: str) -> None:
-    st.header(f"Destino: {titulo}")
-
-    if dd.empty:
-        st.info(f"No hay embarques de {titulo} con los filtros actuales.")
-        return
-
-    cajas_tot = int(dd["CAJAS_35LB"].sum())
-    d1, d2, d3, d4 = st.columns(4)
-    d1.metric("Cajas 35 LB", f"{cajas_tot:,}")
-    d2.metric("Camiones", f"{cajas_tot / LOAD_SIZE:,.1f}")
-    d3.metric("Embarques", f"{len(dd):,}")
-    d4.metric("Vendors", dd["VENDOR"].nunique())
-
-    # --- Cajas por semana ---
-    st.subheader("Cajas 35 LB por semana de salida")
-    by_week = (
-        dd.dropna(subset=["DEPART_WEEK_NUM"])
-        .groupby("DEPART_WEEK_NUM", as_index=False)["CAJAS_35LB"].sum()
-        .sort_values("DEPART_WEEK_NUM")
+# --- Cajas por semana ---
+st.subheader("Cajas 35 LB por semana de salida")
+by_week = (
+    fdf.dropna(subset=["DEPART_WEEK_NUM"])
+    .groupby(["DEPART_WEEK_NUM", "SOURCE"], as_index=False)["CAJAS_35LB"].sum()
+    .sort_values("DEPART_WEEK_NUM")
+)
+if not by_week.empty:
+    fig = px.bar(
+        by_week, x="DEPART_WEEK_NUM", y="CAJAS_35LB", color="SOURCE",
+        barmode="stack", labels={"DEPART_WEEK_NUM": "Semana", "CAJAS_35LB": "Cajas 35 LB"},
     )
-    if not by_week.empty:
-        fig = px.bar(
-            by_week, x="DEPART_WEEK_NUM", y="CAJAS_35LB",
-            labels={"DEPART_WEEK_NUM": "Semana", "CAJAS_35LB": "Cajas 35 LB"},
-        )
-        fig.update_layout(height=380, xaxis=dict(dtick=1))
-        st.plotly_chart(fig, use_container_width=True, key=f"bar_sem_{pfx}")
-    else:
-        st.info("No hay datos de semana de salida para el filtro actual.")
+    fig.update_layout(height=380, xaxis=dict(dtick=1))
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("No hay datos de semana de salida para el filtro actual.")
 
-    # --- TIME LINE: camiones por semana ---
-    st.subheader(f"Time Line · Camiones por semana  ·  1 camion = {LOAD_SIZE} cajas 35 LB")
-    trucks_by_week = (
-        dd.dropna(subset=["DEPART_WEEK_NUM"])
-        .groupby("DEPART_WEEK_NUM", as_index=False)["CAJAS_35LB"].sum()
+# --- TIME LINE: total camiones (loads) por semana del anio ---
+st.subheader(f"Time Line · Total camiones embarcados por semana del anio  ·  1 camion = {LOAD_SIZE} cajas 35 LB")
+trucks_by_week = (
+    fdf.dropna(subset=["DEPART_WEEK_NUM"])
+    .groupby("DEPART_WEEK_NUM", as_index=False)["CAJAS_35LB"].sum()
+)
+if not trucks_by_week.empty:
+    trucks_by_week["CAMIONES"] = trucks_by_week["CAJAS_35LB"] / LOAD_SIZE
+    # Solo semanas con camiones > 0
+    tl = trucks_by_week[trucks_by_week["CAMIONES"] > 0][["DEPART_WEEK_NUM", "CAMIONES"]].sort_values("DEPART_WEEK_NUM").reset_index(drop=True)
+
+    fig_tl = px.line(
+        tl, x="DEPART_WEEK_NUM", y="CAMIONES",
+        markers=True,
+        labels={"DEPART_WEEK_NUM": "Semana del anio", "CAMIONES": "Camiones"},
     )
-    if not trucks_by_week.empty:
-        trucks_by_week["CAMIONES"] = trucks_by_week["CAJAS_35LB"] / LOAD_SIZE
-        tl = (
-            trucks_by_week[trucks_by_week["CAMIONES"] > 0][["DEPART_WEEK_NUM", "CAMIONES"]]
-            .sort_values("DEPART_WEEK_NUM").reset_index(drop=True)
-        )
-    else:
-        tl = pd.DataFrame()
-
-    if not tl.empty:
-        fig_tl = px.line(
-            tl, x="DEPART_WEEK_NUM", y="CAMIONES", markers=True,
-            labels={"DEPART_WEEK_NUM": "Semana del anio", "CAMIONES": "Camiones"},
-        )
-        fig_tl.update_traces(
-            line=dict(color="#e74c3c", width=2),
-            marker=dict(size=8, color="#c0392b"),
-            text=[f"{int(round(v))}" for v in tl["CAMIONES"]],
-            textposition="top center",
-            textfont=dict(size=12),
-            mode="lines+markers+text",
-            hovertemplate="Semana %{x}<br>Camiones: %{y:.1f}<extra></extra>",
-        )
-        week_min, week_max = int(tl["DEPART_WEEK_NUM"].min()), int(tl["DEPART_WEEK_NUM"].max())
-        fig_tl.update_layout(
-            height=420,
-            xaxis=dict(dtick=1, range=[week_min - 0.5, week_max + 0.5], title="Semana del anio"),
-            yaxis=dict(title="Camiones", tickformat="d"),
-            margin=dict(l=40, r=20, t=20, b=40),
-        )
-        st.plotly_chart(fig_tl, use_container_width=True, key=f"tl_{pfx}")
-
-        max_row = tl.loc[tl["CAMIONES"].idxmax()]
-        kc1, kc2, kc3 = st.columns(3)
-        kc1.metric("Total camiones", f"{int(round(tl['CAMIONES'].sum())):,}")
-        kc2.metric("Semana pico", f"S{int(max_row['DEPART_WEEK_NUM'])} · {int(round(max_row['CAMIONES']))}")
-        kc3.metric("Promedio semanas activas", f"{int(round(tl['CAMIONES'].mean())):,}")
-    else:
-        st.info("Sin datos para el time line.")
-
-    # --- Vendors y almacenes ---
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Top Vendors por cajas 35 LB")
-        by_vendor = (
-            dd.groupby("VENDOR", as_index=False)["CAJAS_35LB"].sum()
-            .sort_values("CAJAS_35LB", ascending=False).head(15)
-        )
-        if not by_vendor.empty:
-            fig2 = px.bar(
-                by_vendor, x="CAJAS_35LB", y="VENDOR", orientation="h",
-                labels={"CAJAS_35LB": "Cajas 35 LB", "VENDOR": ""},
-            )
-            fig2.update_layout(height=480, yaxis=dict(categoryorder="total ascending"))
-            st.plotly_chart(fig2, use_container_width=True, key=f"vend_{pfx}")
-        else:
-            st.info("Sin datos.")
-
-    with right:
-        st.subheader("Distribucion por Almacen")
-        by_alm = dd.groupby("ALMACEN", as_index=False)["CAJAS_35LB"].sum()
-        by_alm = by_alm[by_alm["ALMACEN"].astype(bool) & by_alm["ALMACEN"].ne("NAN")]
-        if not by_alm.empty:
-            fig3 = px.pie(by_alm, names="ALMACEN", values="CAJAS_35LB", hole=0.45)
-            fig3.update_layout(height=480)
-            st.plotly_chart(fig3, use_container_width=True, key=f"alm_{pfx}")
-        else:
-            st.info("Sin datos.")
-
-    # --- Vendor x Semana en LOADS ---
-    st.subheader(f"Vendor x Semana (Loads)  ·  1 load = {LOAD_SIZE} cajas 35 LB")
-    loads_df = dd.dropna(subset=["DEPART_WEEK_NUM"]).copy()
-    loads_df["LOADS"] = loads_df["CAJAS_35LB"] / LOAD_SIZE
-    pivot_loads = loads_df.pivot_table(
-        index="VENDOR", columns="DEPART_WEEK_NUM",
-        values="LOADS", aggfunc="sum", fill_value=0,
+    fig_tl.update_traces(
+        line=dict(color="#e74c3c", width=2),
+        marker=dict(size=8, color="#c0392b"),
+        text=[f"{int(round(v))}" for v in tl["CAMIONES"]],
+        textposition="top center",
+        textfont=dict(size=12),
+        mode="lines+markers+text",
+        hovertemplate="Semana %{x}<br>Camiones: %{y:.1f}<extra></extra>",
     )
-    if not pivot_loads.empty:
-        pivot_loads.columns = [int(c) if float(c).is_integer() else c for c in pivot_loads.columns]
-        # Semanas en orden DESCENDENTE: la mas reciente queda como primera columna.
-        pivot_loads = pivot_loads.reindex(sorted(pivot_loads.columns, reverse=True), axis=1)
-        week_cols = list(pivot_loads.columns)
-        n_weeks = len(week_cols)
-        pivot_loads["TOTAL"] = pivot_loads[week_cols].sum(axis=1)
-        pivot_loads["PROMEDIO/SEM"] = pivot_loads["TOTAL"] / n_weeks if n_weeks else 0
-        pivot_loads = pivot_loads.sort_values("TOTAL", ascending=False)
+    week_min, week_max = int(tl["DEPART_WEEK_NUM"].min()), int(tl["DEPART_WEEK_NUM"].max())
+    fig_tl.update_layout(
+        height=420,
+        xaxis=dict(dtick=1, range=[week_min - 0.5, week_max + 0.5], title="Semana del anio"),
+        yaxis=dict(title="Camiones", tickformat="d"),
+        margin=dict(l=40, r=20, t=20, b=40),
+    )
+    st.plotly_chart(fig_tl, use_container_width=True)
 
-        total_row = pivot_loads[week_cols + ["TOTAL"]].sum(axis=0).to_frame().T
-        total_row["PROMEDIO/SEM"] = total_row["TOTAL"].iloc[0] / n_weeks if n_weeks else 0
-        total_row.index = ["TOTAL"]
-        pivot_loads_display = pd.concat([pivot_loads, total_row])
+    max_row = tl.loc[tl["CAMIONES"].idxmax()]
+    kc1, kc2, kc3 = st.columns(3)
+    kc1.metric("Total camiones (ano)", f"{int(round(tl['CAMIONES'].sum())):,}")
+    kc2.metric("Semana pico", f"S{int(max_row['DEPART_WEEK_NUM'])} · {int(round(max_row['CAMIONES']))}")
+    kc3.metric("Promedio semanas activas", f"{int(round(tl['CAMIONES'].mean())):,}")
+else:
+    st.info("Sin datos para el time line.")
 
-        st.dataframe(
-            pivot_loads_display.style.format("{:,.1f}"),
-            use_container_width=True, height=440, key=f"piv_{pfx}",
+# --- Por vendor ---
+left, right = st.columns(2)
+with left:
+    st.subheader("Top Vendors por cajas 35 LB")
+    by_vendor = (
+        fdf.groupby(["VENDOR", "SOURCE"], as_index=False)["CAJAS_35LB"].sum()
+        .sort_values("CAJAS_35LB", ascending=False)
+    )
+    top_vendor = (
+        by_vendor.groupby("VENDOR")["CAJAS_35LB"].sum()
+        .sort_values(ascending=False).head(15).index
+    )
+    by_vendor_top = by_vendor[by_vendor["VENDOR"].isin(top_vendor)]
+    if not by_vendor_top.empty:
+        fig2 = px.bar(
+            by_vendor_top, x="CAJAS_35LB", y="VENDOR", color="SOURCE",
+            orientation="h", labels={"CAJAS_35LB": "Cajas 35 LB", "VENDOR": ""},
         )
-
-        cols_extra = [c for c in ["TOTAL", "PROMEDIO/SEM"] if c in pivot_loads.columns]
-        heat_data = pivot_loads.drop(columns=cols_extra)
-        n_cols = len(heat_data.columns)
-        n_rows = len(heat_data.index)
-        fig_loads = px.imshow(
-            heat_data.values,
-            x=[str(c) for c in heat_data.columns],
-            y=heat_data.index.tolist(),
-            labels=dict(x="Semana de salida", y="Vendor", color="Loads"),
-            color_continuous_scale="YlOrRd",
-            aspect="auto",
-        )
-        fig_loads.update_traces(
-            texttemplate="%{z:.1f}",
-            textfont=dict(size=11),
-            hovertemplate="Vendor: %{y}<br>Semana: %{x}<br>Loads: %{z:.1f}<extra></extra>",
-        )
-        fig_loads.update_layout(
-            height=max(380, 22 * n_rows + 100),
-            width=max(900, 55 * n_cols + 200),
-            margin=dict(l=10, r=40, t=30, b=10),
-        )
-        fig_loads.update_xaxes(side="top", dtick=1, type="category")
-        st.plotly_chart(fig_loads, use_container_width=False, key=f"heat_{pfx}")
-
-        st.download_button(
-            "Descargar tabla Loads (CSV)",
-            pivot_loads_display.round(1).to_csv().encode("utf-8-sig"),
-            f"vendor_x_semana_loads_{pfx}.csv", "text/csv", key=f"dl_loads_{pfx}",
-        )
+        fig2.update_layout(height=480, yaxis=dict(categoryorder="total ascending"))
+        st.plotly_chart(fig2, use_container_width=True)
     else:
-        st.info("Sin datos para tabla de loads.")
+        st.info("Sin datos.")
 
-    with st.expander(f"Detalle de {titulo} ({len(dd):,} embarques)"):
-        st.dataframe(
-            dd[["VENDOR", "PRODUCT", "DEPART_WEEK", "CAJAS_35LB", "ALMACEN"]],
-            use_container_width=True, height=400, key=f"det_{pfx}",
-        )
-        st.download_button(
-            "Descargar CSV", dd.to_csv(index=False).encode("utf-8-sig"),
-            f"papaya_{pfx}.csv", "text/csv", key=f"dl_det_{pfx}",
-        )
+with right:
+    st.subheader("Distribucion por Almacen")
+    by_alm = fdf.groupby("ALMACEN", as_index=False)["CAJAS_35LB"].sum()
+    by_alm = by_alm[by_alm["ALMACEN"].astype(bool) & by_alm["ALMACEN"].ne("NAN")]
+    if not by_alm.empty:
+        fig3 = px.pie(by_alm, names="ALMACEN", values="CAJAS_35LB", hole=0.45)
+        fig3.update_layout(height=480)
+        st.plotly_chart(fig3, use_container_width=True)
+    else:
+        st.info("Sin datos.")
 
+st.divider()
 
-for _src, _corto, _pfx in destinos_activos:
-    render_destino(fdf[fdf["SOURCE"] == _src].copy(), _src, _pfx)
-    st.divider()
+# --- Vendor x Semana en LOADS (1 load = 1150 cajas 35 LB) ---
+st.subheader(f"Vendor x Semana (Loads)  ·  1 load = {LOAD_SIZE} cajas 35 LB")
 
-# --- Exportacion global ---
-with st.expander(f"Detalle completo, todos los destinos ({len(fdf):,} embarques)"):
+loads_df = fdf.dropna(subset=["DEPART_WEEK_NUM"]).copy()
+loads_df["LOADS"] = loads_df["CAJAS_35LB"] / LOAD_SIZE
+
+pivot_loads = loads_df.pivot_table(
+    index="VENDOR", columns="DEPART_WEEK_NUM",
+    values="LOADS", aggfunc="sum", fill_value=0,
+)
+if not pivot_loads.empty:
+    pivot_loads.columns = [int(c) if float(c).is_integer() else c for c in pivot_loads.columns]
+    # Semanas en orden DESCENDENTE: la mas reciente queda como primera columna.
+    pivot_loads = pivot_loads.reindex(sorted(pivot_loads.columns, reverse=True), axis=1)
+    week_cols = list(pivot_loads.columns)
+    n_weeks = len(week_cols)
+    pivot_loads["TOTAL"] = pivot_loads[week_cols].sum(axis=1)
+    pivot_loads["PROMEDIO/SEM"] = pivot_loads["TOTAL"] / n_weeks if n_weeks else 0
+    pivot_loads = pivot_loads.sort_values("TOTAL", ascending=False)
+
+    total_row = pivot_loads[week_cols + ["TOTAL"]].sum(axis=0).to_frame().T
+    total_row["PROMEDIO/SEM"] = total_row["TOTAL"].iloc[0] / n_weeks if n_weeks else 0
+    total_row.index = ["TOTAL"]
+    pivot_loads_display = pd.concat([pivot_loads, total_row])
+
+    st.dataframe(
+        pivot_loads_display.style.format("{:,.1f}"),
+        use_container_width=True, height=440,
+    )
+
+    # Heatmap: vendor x semana
+    cols_extra = [c for c in ["TOTAL", "PROMEDIO/SEM"] if c in pivot_loads.columns]
+    heat_data = pivot_loads.drop(columns=cols_extra)
+
+    # Ancho minimo por columna para que el texto quepa siempre (incluye semanas nuevas)
+    n_cols = len(heat_data.columns)
+    n_rows = len(heat_data.index)
+    fig_width = max(900, 55 * n_cols + 200)
+
+    fig_loads = px.imshow(
+        heat_data.values,
+        x=[str(c) for c in heat_data.columns],
+        y=heat_data.index.tolist(),
+        labels=dict(x="Semana de salida", y="Vendor", color="Loads"),
+        color_continuous_scale="YlOrRd",
+        aspect="auto",
+    )
+    # Forzar renderizado de texto en TODAS las celdas (bypasea el auto-hide de texto en celdas chicas)
+    fig_loads.update_traces(
+        texttemplate="%{z:.1f}",
+        textfont=dict(size=11),
+        hovertemplate="Vendor: %{y}<br>Semana: %{x}<br>Loads: %{z:.1f}<extra></extra>",
+    )
+    fig_loads.update_layout(
+        height=max(380, 22 * n_rows + 100),
+        width=fig_width,
+        margin=dict(l=10, r=40, t=30, b=10),
+    )
+    fig_loads.update_xaxes(side="top", dtick=1, type="category")
+    st.plotly_chart(fig_loads, use_container_width=False)
+
+    csv_loads = pivot_loads_display.round(1).to_csv().encode("utf-8-sig")
+    st.download_button("Descargar tabla Loads (CSV)", csv_loads, "vendor_x_semana_loads.csv", "text/csv")
+else:
+    st.info("Sin datos para tabla de loads.")
+
+st.divider()
+
+# --- Detalle ---
+with st.expander("Detalle (filas filtradas)"):
     st.dataframe(
         fdf[["SOURCE", "VENDOR", "PRODUCT", "DEPART_WEEK", "CAJAS_35LB", "ALMACEN"]],
-        use_container_width=True, height=400, key="det_global",
+        use_container_width=True, height=400,
     )
-    st.download_button(
-        "Descargar CSV filtrado", fdf.to_csv(index=False).encode("utf-8-sig"),
-        "papaya_filtrado.csv", "text/csv", key="dl_global",
-    )
-
+    csv = fdf.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("Descargar CSV filtrado", csv, "papaya_filtrado.csv", "text/csv")
 
 if show_diag:
     st.divider()
