@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # Usa el almacen de certificados del sistema (solo Windows/macOS) para evitar
@@ -61,6 +61,7 @@ SOURCES = {
         "positional_map": {
             "VENDOR": 2,       # col C
             "PRODUCT": 4,      # col E
+            "DEPART_DATE": 7,  # col H  (DEPART DATE FROM ORIGIN - REAL)
             "DEPART_WEEK": 11, # col L
             "CAJAS_35LB": 20,  # col U
             "ALMACEN": 22,     # col W
@@ -255,6 +256,8 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         "VENDOR": ["^vendor\\b", "vendor 1", "vendor"],
         "PRODUCT": ["^product\\b", "prod 1", "producto", "product"],
         "DEPART_WEEK": ["depart.?week", "semana.*salida", "depart wk"],
+        # Fecha de salida REAL (el encabezado trae saltos de linea, por eso [\s\S])
+        "DEPART_DATE": ["depart[\\s\\S]*date[\\s\\S]*real", "fecha[\\s\\S]*salida[\\s\\S]*real"],
         "CAJAS_35LB": ["35\\s*lb\\s*conv", "caja\\s*35\\s*lb", "35lb", "35 lb"],
         "ALMACEN": ["almac"],
     }
@@ -316,6 +319,18 @@ def load_all() -> tuple[pd.DataFrame, dict]:
         df["VENDOR"] = df["VENDOR"].replace(alias_to_canon)
 
     df["DEPART_WEEK_NUM"] = pd.to_numeric(df["DEPART_WEEK"], errors="coerce")
+
+    # Fecha de salida REAL. El formato de los sheets es 02-Jan-26; lo que no
+    # cuadre con ese formato se intenta con el parser generico.
+    fecha_txt = df["DEPART_DATE"].astype(str).str.strip()
+    fechas = pd.to_datetime(fecha_txt, format="%d-%b-%y", errors="coerce")
+    faltantes = fechas.isna() & fecha_txt.ne("") & fecha_txt.ne("NAN") & fecha_txt.ne("nan")
+    if faltantes.any():
+        fechas.loc[faltantes] = pd.to_datetime(
+            fecha_txt[faltantes], errors="coerce", dayfirst=True
+        )
+    df["DEPART_DATE"] = fechas
+
     return df, diagnostics
 
 
@@ -431,11 +446,15 @@ if weeks_available:
 else:
     week_range = None
 
-mask = df["SOURCE"].isin(sources_sel)
+# Mascara base: todo menos el rango de semanas (el calendario la reutiliza para
+# poder mostrar siempre la semana actual aunque el slider este acotado).
+mask_base = df["SOURCE"].isin(sources_sel)
 if vendors_sel:
-    mask &= df["VENDOR"].isin(vendors_sel)
+    mask_base &= df["VENDOR"].isin(vendors_sel)
 if almacenes_sel:
-    mask &= df["ALMACEN"].isin(almacenes_sel)
+    mask_base &= df["ALMACEN"].isin(almacenes_sel)
+
+mask = mask_base.copy()
 if week_range:
     mask &= df["DEPART_WEEK_NUM"].between(week_range[0], week_range[1]) | df["DEPART_WEEK_NUM"].isna()
 
@@ -451,6 +470,115 @@ k4.metric("Almacenes distintos", fdf["ALMACEN"].nunique())
 st.divider()
 
 LOAD_SIZE = 1150  # 1 camion / 1 load = 1150 cajas 35 LB
+
+# ---------------------------------------------------------------------------
+# Calendario de la semana en curso
+# La semana se toma de la columna DEPART WEEK del sheet y se compara contra la
+# semana ISO de hoy, asi que avanza sola conforme pasa el tiempo.
+# ---------------------------------------------------------------------------
+HOY = date.today()
+SEMANA_ACTUAL = HOY.isocalendar().week
+LUNES = HOY - timedelta(days=HOY.weekday())
+DIAS_ES = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
+MESES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+
+st.subheader(f"Calendario · Semana {SEMANA_ACTUAL} (en curso)")
+st.caption(
+    f"Embarques marcados con DEPART WEEK = {SEMANA_ACTUAL}, colocados por su fecha de salida REAL. "
+    f"Hoy es {DIAS_ES[HOY.weekday()]} {HOY.day}-{MESES_ES[HOY.month - 1]}-{HOY.year}."
+)
+
+sem = df.loc[mask_base & (df["DEPART_WEEK_NUM"] == SEMANA_ACTUAL)].copy()
+
+if sem.empty:
+    st.info(f"No hay embarques registrados en la semana {SEMANA_ACTUAL} con los filtros actuales.")
+else:
+    con_fecha = sem.dropna(subset=["DEPART_DATE"]).copy()
+    con_fecha["DIA"] = con_fecha["DEPART_DATE"].dt.date
+    sin_fecha = len(sem) - len(con_fecha)
+
+    # Filas cuya fecha real cae fuera del lunes-domingo de esta semana
+    # (errores de captura en la columna DEPART WEEK). Se reportan aparte para
+    # que los totales cuadren siempre con la suma de los 7 dias.
+    DOMINGO = LUNES + timedelta(days=6)
+    en_ventana = con_fecha["DIA"].between(LUNES, DOMINGO)
+    fuera_rango = con_fecha.loc[~en_ventana].copy()
+    con_fecha = con_fecha.loc[en_ventana].copy()
+
+    cols = st.columns(7)
+    for i, col in enumerate(cols):
+        dia = LUNES + timedelta(days=i)
+        dia_df = con_fecha[con_fecha["DIA"] == dia]
+        cajas = int(dia_df["CAJAS_35LB"].sum())
+        camiones = cajas / LOAD_SIZE
+        es_hoy = dia == HOY
+        futuro = dia > HOY
+        with col:
+            with st.container(border=True):
+                etiqueta = f"{DIAS_ES[i]} {dia.day}-{MESES_ES[dia.month - 1]}"
+                st.markdown(f"**{'🟢 ' if es_hoy else ''}{etiqueta}**")
+                if len(dia_df):
+                    st.markdown(f"### {cajas:,}")
+                    st.caption(f"cajas · {camiones:.1f} camiones")
+                    st.caption(f"{len(dia_df)} embarques")
+                elif futuro:
+                    st.markdown("### —")
+                    st.caption("por salir")
+                else:
+                    st.markdown("### 0")
+                    st.caption("sin embarques")
+
+    tot_cajas = int(con_fecha["CAJAS_35LB"].sum())
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric(f"Total semana {SEMANA_ACTUAL}", f"{tot_cajas:,} cajas")
+    r2.metric("Camiones", f"{tot_cajas / LOAD_SIZE:.1f}")
+    r3.metric("Embarques", f"{len(con_fecha):,}")
+    r4.metric("Vendors", con_fecha["VENDOR"].nunique())
+
+    if sin_fecha:
+        st.warning(
+            f"{sin_fecha} embarque(s) de la semana {SEMANA_ACTUAL} no tienen fecha de salida REAL "
+            "capturada, por eso no aparecen en ningun dia del calendario."
+        )
+
+    if len(fuera_rango):
+        with st.expander(
+            f"⚠️ {len(fuera_rango)} embarque(s) marcados semana {SEMANA_ACTUAL} "
+            f"con fecha fuera del {LUNES.day}-{MESES_ES[LUNES.month - 1]} al "
+            f"{DOMINGO.day}-{MESES_ES[DOMINGO.month - 1]}"
+        ):
+            st.caption(
+                "La columna DEPART WEEK del sheet dice semana "
+                f"{SEMANA_ACTUAL}, pero la fecha de salida REAL cae en otra semana. "
+                "Suele ser un error de captura. No estan incluidos en los totales de arriba."
+            )
+            fr = fuera_rango.sort_values("DEPART_DATE")[
+                ["SOURCE", "VENDOR", "DEPART_DATE", "CAJAS_35LB", "ALMACEN"]
+            ].copy()
+            fr["DEPART_DATE"] = fr["DEPART_DATE"].dt.strftime("%d-%b-%Y")
+            fr.columns = ["Origen", "Vendor", "Fecha salida REAL", "Cajas 35 LB", "Almacen"]
+            st.dataframe(
+                fr.style.format({"Cajas 35 LB": "{:,.0f}"}),
+                use_container_width=True, hide_index=True,
+            )
+
+    with st.expander(f"Detalle de la semana {SEMANA_ACTUAL} ({len(con_fecha)} embarques)", expanded=True):
+        det = con_fecha.sort_values(["DEPART_DATE", "VENDOR"]).copy()
+        det["Dia"] = det["DEPART_DATE"].apply(lambda d: f"{DIAS_ES[d.weekday()]} {d.day}-{MESES_ES[d.month - 1]}")
+        det["Camiones"] = det["CAJAS_35LB"] / LOAD_SIZE
+        det = det[["Dia", "SOURCE", "VENDOR", "PRODUCT", "CAJAS_35LB", "Camiones", "ALMACEN"]]
+        det.columns = ["Dia", "Origen", "Vendor", "Producto", "Cajas 35 LB", "Camiones", "Almacen"]
+        st.dataframe(
+            det.style.format({"Cajas 35 LB": "{:,.0f}", "Camiones": "{:,.1f}"}),
+            use_container_width=True, height=380, hide_index=True,
+        )
+        st.download_button(
+            "Descargar detalle de la semana (CSV)",
+            det.to_csv(index=False).encode("utf-8-sig"),
+            f"semana_{SEMANA_ACTUAL}.csv", "text/csv",
+        )
+
+st.divider()
 
 # --- Cajas por semana ---
 st.subheader("Cajas 35 LB por semana de salida")
