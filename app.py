@@ -542,6 +542,13 @@ else:
     fuera_rango = con_fecha.loc[~en_ventana].copy()
     con_fecha = con_fecha.loc[en_ventana].copy()
 
+    # Destinos a desglosar dentro de cada dia. Si solo hay uno seleccionado el
+    # desglose seria igual al total, asi que se omite.
+    DESTINOS_CAL = [
+        (s, c) for s, c in (("TX LOADS", "TX"), ("TIJ LOADS", "TIJ")) if s in sources_sel
+    ]
+    desglosar = len(DESTINOS_CAL) > 1
+
     cols = st.columns(7)
     for i, col in enumerate(cols):
         dia = LUNES + timedelta(days=i)
@@ -558,6 +565,11 @@ else:
                     st.markdown(f"### {cajas:,}")
                     st.caption(f"cajas · {camiones:.1f} camiones")
                     st.caption(f"{len(dia_df)} embarques")
+                    if desglosar:
+                        st.divider()
+                        for _src_d, _corto in DESTINOS_CAL:
+                            cd = int(dia_df.loc[dia_df["SOURCE"] == _src_d, "CAJAS_35LB"].sum())
+                            st.caption(f"**{_corto}**  {cd:,} · {cd / LOAD_SIZE:.1f} cam")
                 elif futuro:
                     st.markdown("### —")
                     st.caption("por salir")
