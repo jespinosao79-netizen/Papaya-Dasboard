@@ -472,26 +472,63 @@ st.divider()
 LOAD_SIZE = 1150  # 1 camion / 1 load = 1150 cajas 35 LB
 
 # ---------------------------------------------------------------------------
-# Calendario de la semana en curso
-# La semana se toma de la columna DEPART WEEK del sheet y se compara contra la
-# semana ISO de hoy, asi que avanza sola conforme pasa el tiempo.
+# Calendario semanal
+# Por defecto muestra la semana en curso, derivada de la fecha del sistema
+# (semana ISO), y permite desplegar semanas anteriores. Al recargar la pagina
+# siempre vuelve a la semana actual.
 # ---------------------------------------------------------------------------
 HOY = date.today()
 SEMANA_ACTUAL = HOY.isocalendar().week
-LUNES = HOY - timedelta(days=HOY.weekday())
+ANIO_ISO = HOY.isocalendar().year
 DIAS_ES = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
 MESES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
-st.subheader(f"Calendario · Semana {SEMANA_ACTUAL} (en curso)")
-st.caption(
-    f"Embarques marcados con DEPART WEEK = {SEMANA_ACTUAL}, colocados por su fecha de salida REAL. "
-    f"Hoy es {DIAS_ES[HOY.weekday()]} {HOY.day}-{MESES_ES[HOY.month - 1]}-{HOY.year}."
+st.subheader("Calendario semanal")
+
+semanas_datos = {int(w) for w in df.loc[mask_base, "DEPART_WEEK_NUM"].dropna().unique()}
+opciones_sem = sorted(semanas_datos | {SEMANA_ACTUAL}, reverse=True)
+
+
+def _fmt_semana(w: int) -> str:
+    if w == SEMANA_ACTUAL:
+        return f"Semana {w} · en curso"
+    if w == SEMANA_ACTUAL - 1:
+        return f"Semana {w} · anterior"
+    return f"Semana {w}"
+
+
+# index= solo aplica la primera vez; despues manda lo que el usuario eligio en
+# session_state. Al recargar la pagina la sesion es nueva y vuelve a la actual.
+SEMANA_SEL = st.selectbox(
+    "Semana a revisar",
+    opciones_sem,
+    index=opciones_sem.index(SEMANA_ACTUAL),
+    format_func=_fmt_semana,
+    key="cal_semana",
 )
 
-sem = df.loc[mask_base & (df["DEPART_WEEK_NUM"] == SEMANA_ACTUAL)].copy()
+try:
+    LUNES = date.fromisocalendar(ANIO_ISO, SEMANA_SEL, 1)
+except ValueError:
+    LUNES = HOY - timedelta(days=HOY.weekday())
+
+es_semana_actual = SEMANA_SEL == SEMANA_ACTUAL
+_dom = LUNES + timedelta(days=6)
+st.caption(
+    f"Embarques con DEPART WEEK = {SEMANA_SEL} "
+    f"({LUNES.day}-{MESES_ES[LUNES.month - 1]} al {_dom.day}-{MESES_ES[_dom.month - 1]}), "
+    "colocados por su fecha de salida REAL. "
+    + (
+        f"Hoy es {DIAS_ES[HOY.weekday()]} {HOY.day}-{MESES_ES[HOY.month - 1]}-{HOY.year}."
+        if es_semana_actual
+        else "Estas viendo una semana pasada."
+    )
+)
+
+sem = df.loc[mask_base & (df["DEPART_WEEK_NUM"] == SEMANA_SEL)].copy()
 
 if sem.empty:
-    st.info(f"No hay embarques registrados en la semana {SEMANA_ACTUAL} con los filtros actuales.")
+    st.info(f"No hay embarques registrados en la semana {SEMANA_SEL} con los filtros actuales.")
 else:
     con_fecha = sem.dropna(subset=["DEPART_DATE"]).copy()
     con_fecha["DIA"] = con_fecha["DEPART_DATE"].dt.date
@@ -530,26 +567,26 @@ else:
 
     tot_cajas = int(con_fecha["CAJAS_35LB"].sum())
     r1, r2, r3, r4 = st.columns(4)
-    r1.metric(f"Total semana {SEMANA_ACTUAL}", f"{tot_cajas:,} cajas")
+    r1.metric(f"Total semana {SEMANA_SEL}", f"{tot_cajas:,} cajas")
     r2.metric("Camiones", f"{tot_cajas / LOAD_SIZE:.1f}")
     r3.metric("Embarques", f"{len(con_fecha):,}")
     r4.metric("Vendors", con_fecha["VENDOR"].nunique())
 
     if sin_fecha:
         st.warning(
-            f"{sin_fecha} embarque(s) de la semana {SEMANA_ACTUAL} no tienen fecha de salida REAL "
+            f"{sin_fecha} embarque(s) de la semana {SEMANA_SEL} no tienen fecha de salida REAL "
             "capturada, por eso no aparecen en ningun dia del calendario."
         )
 
     if len(fuera_rango):
         with st.expander(
-            f"⚠️ {len(fuera_rango)} embarque(s) marcados semana {SEMANA_ACTUAL} "
+            f"⚠️ {len(fuera_rango)} embarque(s) marcados semana {SEMANA_SEL} "
             f"con fecha fuera del {LUNES.day}-{MESES_ES[LUNES.month - 1]} al "
             f"{DOMINGO.day}-{MESES_ES[DOMINGO.month - 1]}"
         ):
             st.caption(
                 "La columna DEPART WEEK del sheet dice semana "
-                f"{SEMANA_ACTUAL}, pero la fecha de salida REAL cae en otra semana. "
+                f"{SEMANA_SEL}, pero la fecha de salida REAL cae en otra semana. "
                 "Suele ser un error de captura. No estan incluidos en los totales de arriba."
             )
             fr = fuera_rango.sort_values("DEPART_DATE")[
@@ -562,7 +599,7 @@ else:
                 use_container_width=True, hide_index=True,
             )
 
-    with st.expander(f"Detalle de la semana {SEMANA_ACTUAL} ({len(con_fecha)} embarques)", expanded=True):
+    with st.expander(f"Detalle de la semana {SEMANA_SEL} ({len(con_fecha)} embarques)", expanded=True):
         det = con_fecha.sort_values(["DEPART_DATE", "VENDOR"]).copy()
         det["Dia"] = det["DEPART_DATE"].apply(lambda d: f"{DIAS_ES[d.weekday()]} {d.day}-{MESES_ES[d.month - 1]}")
         det["Camiones"] = det["CAJAS_35LB"] / LOAD_SIZE
@@ -575,7 +612,7 @@ else:
         st.download_button(
             "Descargar detalle de la semana (CSV)",
             det.to_csv(index=False).encode("utf-8-sig"),
-            f"semana_{SEMANA_ACTUAL}.csv", "text/csv",
+            f"semana_{SEMANA_SEL}.csv", "text/csv",
         )
 
 st.divider()
